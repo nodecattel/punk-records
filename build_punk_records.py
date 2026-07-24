@@ -16,12 +16,39 @@ logger = logging.getLogger("punk-records")
 keyword_extract_pattern = r"\[(rush(?:: ?character)?|double attack|banish|blocker|trigger|unblockable|activate: main|main|counter|when attacking|on play|on block|on your opponent\'s attack|on k\.o\.|end of your turn|end of your opponent\'s turn|your turn|opponent\'s turn|once per turn|don!! x(?:10|[1-9]))\]"
 
 
-def run(cmd, out_path=None):
-    """Run a command and optionally write its stdout to out_path."""
-    try:
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Command failed: {' '.join(str(cmd))}\n{e.stderr}") from e
+# def run(cmd, out_path=None):
+#    """Run a command and optionally write its stdout to out_path."""
+#    try:
+#        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+#    except subprocess.CalledProcessError as e:
+#        raise RuntimeError(f"Command failed: {' '.join(str(cmd))}\n{e.stderr}") from e
+#    if out_path:
+#        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+#        Path(out_path).write_text(proc.stdout, encoding="utf-8")
+#        return None
+#    return proc.stdout
+
+def run(cmd, out_path=None, retries=3, backoff=5):
+    """Run a command and optionally write its stdout to out_path. Retries on failure with exponential backoff."""
+    last_err = None
+    proc = None
+    for attempt in range(1, retries + 1):
+        try:
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+            break
+        except subprocess.CalledProcessError as e:
+            last_err = e
+            if attempt < retries:
+                logger.warning(
+                    "Command failed (attempt %d/%d): %s. Retrying in %ds...",
+                    attempt, retries, " ".join(str(c) for c in cmd), backoff,
+                )
+                time.sleep(backoff)
+                backoff *= 2
+            else:
+                raise RuntimeError(f"Command failed after {retries} attempts: {' '.join(str(c) for c in cmd)}\n{last_err.stderr}") from last_err
+    if not proc: # Sanity Check
+        return None
     if out_path:
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_text(proc.stdout, encoding="utf-8")
@@ -58,6 +85,7 @@ def build_language(args, lang):
 
     # 1) Packs
     logger.debug("Fetching packs (%s)...", lang)
+    time.sleep(2) # warm-up delay
     run([args.vegapull, "pull", "--language", lang, "--output", lang_dir, "packs"])
     packs_json_path = lang_dir / "json" / "packs.json"
     packs = json.loads(packs_json_path.read_text(encoding="utf-8"))
